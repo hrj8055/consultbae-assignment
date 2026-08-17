@@ -232,3 +232,38 @@ Searched: streamlit gio operation not supported WSL
 Fix: Disregarded the issue (the warning is non-fatal – the server is running perfectly well) and simply opened http://localhost:8501 manually inside the Windows browser. Port forwarding from the localhost of WSL2 to Windows is done automatically.
 
 Rejected: Installing some graphical browser and/or X server in WSL2 just to enable auto-launching of the browser window; that would have complicated things unnecessarily when all I have to do is spend 2 seconds in opening the link manually every time I start the server.
+
+
+
+
+## Task 5 (Stretch): Scaling to 5,000 Gig Workers in a Weekend
+
+This is an analysis of the system built above (Streamlit app + SQLite + local disk storage + a Flask API called by n8n). Not a generic scaling essay. Assuming about 5,000 submissions arrive over 48 hours unevenly (most in a few peak windows not spread evenly).
+
+### What breaks
+
+1. **SQLite write locking.** SQLite allows one writer at a time. Now every audio submission opens a new connection and writes directly. Under moderate concurrency (a few dozen simultaneous submissions) writes start queuing and some will fail with database is locked errors. This is certainly the first thing to break. It doesn't take 5,000 users, just 10-20 hitting Submit in the same few seconds.
+
+2. **Streamlits execution model.** Streamlit reruns the script top to bottom on every user interaction and holds server-side session state per user. It was built for single-analyst dashboards, not thousands of public users. A single Streamlit process will run out of memory/CPU headroom before 5,000 concurrent sessions and theres no built-in horizontal scaling. You can't just spin up more Streamlit instances without also solving session/state sharing across them.
+
+3. **Local disk storage for files.** Every submission currently writes its file to app/audio_uploads/ on a single machines disk. At scale this means: (a) the disk fills up unpredictably (b) if that single machine goes down all submissions and their audio are gone, (c) there's no redundancy or backup.
+
+4. **Synchronous audio processing in the request path.** extract_audio_features() (via pydub/ffmpeg) runs inline blocking the HTTP request until it finishes. Under load slow feature extraction on lower-quality audio files would tie up server threads and cause request timeouts for other users waiting to submit.
+
+5. **No duplicate-submission protection at the app level.** The n8n automation checks for duplicates when explicitly invoked but the Streamlit app itself doesn't call it. Someone could submit the recording 10 times (accidentally on a bad connection, retrying after a timeout) and create 10 rows.
+
+### What I'd change before launch
+
+- Replace SQLite with a managed Postgres instance (or at minimum enable SQLites WAL mode as a stopgap) to handle writes safely.
+
+- Move audio storage to object storage (S3, Azure Blob or similar) instead of local disk. Durable doesn't fill up a single machine and can be served via CDN for playback.
+
+- Decouple audio processing from the request path using a queue (e.g. A simple job queue or serverless function triggered on upload) so submission is instant and feature extraction happens asynchronously. Show the user "Submitted. Processing" than making them wait.
+
+- Replace or front Streamlit with something built for concurrent public traffic. Either a lightweight API (FastAPI) + static frontend behind a proper web server or deploy Streamlit behind a load balancer with multiple instances and externalized session state if staying on Streamlit is a hard requirement.
+
+- Add basic rate limiting and idempotency (e.g. debounce repeat submissions from the same phone number within a short window) to guard against accidental duplicate submissions and basic abuse/spam.
+
+- Add monitoring/alerting for disk usage, error rates and queue backlog so problems are caught during the weekend not after.
+
+- Cost: 5,000 submissions × an estimated 5-10MB average audio file is 25-50GB of storage plus egress if audio is played back frequently. Object storage + CDN costs for this volume are tens of dollars) but a single always-on VM sized for peak weekend load if left running afterward would be needlessly expensive. An autoscaling setup (scale up for the weekend down after) is the cost-sensible choice, over a fixed large instance.
