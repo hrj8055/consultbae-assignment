@@ -210,3 +210,25 @@ module name, for Python 3.13+.
 
 meant rebuilding the whole venv and risked other compatibility issues.
 
+2. sqlite3.OperationalError: table audio_submissions has no column named person_id
+
+This occurred after implementing the phone-based linking in the audio application because the audio_submissions table was already created previously (prior to creation of person_id).
+ Even if the schema has been changed, sqlite3's CREATE TABLE IF NOT EXISTS statement does nothing when the table already exists.
+
+Search: sqlite3 CREATE TABLE IF NOT EXISTS doesn't update the schema
+Solution: added code for PRAGMA table_info(audio_submissions) and ALTER TABLE ... ADD COLUMN as a fallback for when the database already exists.
+Rejected: Deleting people.db and recreating it from scratch - although this works fine for tests,
+ it's not a proper migration strategy that the application would require.
+
+
+ 3.
+  Streamlit did not open automatically in browser (gio: http://localhost:8501: Operation not supported)
+
+The Streamlit package attempted to launch a browser window using the "gio" command from Linux.
+ But, I am operating inside WSL2 (Ubuntu), which lacks any built-in graphical interface browser application that can be opened through the gio command.
+
+Searched: streamlit gio operation not supported WSL
+
+Fix: Disregarded the issue (the warning is non-fatal – the server is running perfectly well) and simply opened http://localhost:8501 manually inside the Windows browser. Port forwarding from the localhost of WSL2 to Windows is done automatically.
+
+Rejected: Installing some graphical browser and/or X server in WSL2 just to enable auto-launching of the browser window; that would have complicated things unnecessarily when all I have to do is spend 2 seconds in opening the link manually every time I start the server.
